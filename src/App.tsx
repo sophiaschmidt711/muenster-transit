@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BusFront, LocateFixed, Map as MapIcon, Navigation, RefreshCw, Search, Star, TrendingUp } from "lucide-react";
+import { ArrowLeftRight, BusFront, LocateFixed, Map as MapIcon, Navigation, RefreshCw, Search, Star } from "lucide-react";
+import MapView, { type TripSelection } from "./MapView";
 
 const API = "https://rest.busradar.conterra.de/prod";
 
@@ -21,6 +22,8 @@ type StopFeature = {
   properties?: { lbez?: string; nr?: string | number };
   geometry?: { coordinates?: [number, number] };
 };
+
+type Tab = "now" | "map" | "plan";
 
 const lineColors = ["#6a55e8", "#2785d8", "#df6d50", "#2f9a70", "#c4589a", "#8c6d31", "#118ab2", "#ef476f"];
 const cleanName = (value: string) => value.replace(/str\.$/, "straße");
@@ -44,7 +47,7 @@ function km(a: [number, number], b: [number, number]) {
 }
 
 function groupStops(features: StopFeature[]): Stop[] {
-  const grouped = new Map<string, Stop>();
+  const grouped = new globalThis.Map<string, Stop>();
   for (const feature of features) {
     const name = feature.properties?.lbez;
     const nr = feature.properties?.nr;
@@ -58,6 +61,7 @@ function groupStops(features: StopFeature[]): Stop[] {
 }
 
 export default function App() {
+  const [tab, setTab] = useState<Tab>("now");
   const [stops, setStops] = useState<Stop[]>([]);
   const [selectedName, setSelectedName] = useState(() => localStorage.getItem("mt-selected-stop") || "Hauptbahnhof");
   const [departures, setDepartures] = useState<Departure[]>([]);
@@ -67,6 +71,10 @@ export default function App() {
   const [error, setError] = useState("");
   const [distance, setDistance] = useState<number | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [selectedTrip, setSelectedTrip] = useState<TripSelection | null>(null);
+  const [planFrom, setPlanFrom] = useState("Mein Standort");
+  const [planTo, setPlanTo] = useState("");
+  const [planMessage, setPlanMessage] = useState("");
 
   const selected = stops.find((stop) => stop.name === selectedName) || stops[0];
 
@@ -132,10 +140,29 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [selected?.name, loadDepartures]);
 
-  function chooseStop(stop: Stop) {
+  const chooseStop = useCallback((stop: Stop) => {
     setSelectedName(stop.name);
     setQuery("");
     setDistance(null);
+  }, []);
+
+  const chooseStopFromMap = useCallback((name: string) => {
+    setSelectedName(name);
+    setTab("now");
+    setDistance(null);
+  }, []);
+
+  const chooseTrip = useCallback((trip: TripSelection) => {
+    setSelectedTrip(trip);
+    setTab("map");
+  }, []);
+
+  const clearTrip = useCallback(() => setSelectedTrip(null), []);
+
+  function openDeparture(d: Departure) {
+    const id = String(d.fahrtbezeichner || "");
+    if (!id) return;
+    chooseTrip({ id, line: String(d.linientext || "Bus"), direction: d.richtungstext || "Richtung unbekannt" });
   }
 
   function findNearest() {
@@ -154,8 +181,22 @@ export default function App() {
     }, () => setError("Standort nicht freigegeben."), { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
   }
 
+  function swapPlan() {
+    const from = planFrom;
+    setPlanFrom(planTo || "Mein Standort");
+    setPlanTo(from === "Mein Standort" ? "" : from);
+  }
+
+  function submitPlan() {
+    if (!planTo.trim()) {
+      setPlanMessage("Bitte zuerst ein Ziel eingeben.");
+      return;
+    }
+    setPlanMessage("Die Verbindungssuche kommt als nächster Schritt. Genau hier werden später schnellste und sicherste Route inklusive Anschlussrisiko verglichen.");
+  }
+
   return <div className="shell">
-    <main className="app">
+    {tab === "now" && <main className="app">
       <header className="topbar">
         <div><p className="eyebrow">Münster · live</p><h1>Wohin geht’s?</h1></div>
         <button className="round" onClick={() => selected && loadDepartures(selected)} aria-label="Aktualisieren"><RefreshCw size={20}/></button>
@@ -184,7 +225,7 @@ export default function App() {
             const timestamp = departureTime(d);
             const delay = Math.round(Number(d.delay || 0) / 60);
             const line = String(d.linientext || "Bus");
-            return <button className="departure" key={`${d.fahrtbezeichner}-${d.sequenz}-${index}`}>
+            return <button className="departure" onClick={() => openDeparture(d)} key={`${d.fahrtbezeichner}-${d.sequenz}-${index}`}>
               <span className="line" style={{ background: lineColor(line) }}>{line}</span>
               <span className="copy"><strong>{d.richtungstext || "Richtung unbekannt"}</strong><span className={`meta ${delay > 0 ? "late" : delay < 0 ? "early" : ""}`}>{delay > 0 ? `+${delay} Min. später` : delay < 0 ? `${Math.abs(delay)} Min. früher` : "pünktlich"} · {clock(timestamp)}</span></span>
               <span className="mins"><strong>{minutesUntil(timestamp)}</strong><small>min</small></span>
@@ -194,16 +235,33 @@ export default function App() {
         <p className="updated">{updatedAt ? `Stand ${updatedAt.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} · automatisch alle 20 Sekunden` : "Live-Daten der Stadtwerke Münster"}</p>
       </section>
 
-      <section className="card placeholderCard">
-        <div className="sectionhead"><div><p className="eyebrow neutral">Als Nächstes</p><h2>Anschluss & Zuverlässigkeit</h2></div><TrendingUp size={22}/></div>
-        <p>Hier kommen echte Verspätungsstatistiken und Anschlusswahrscheinlichkeiten hin. Wir zeigen bewusst noch keine erfundenen Prozentwerte an, bis genügend historische Daten gesammelt sind.</p>
+      <button className="wideAction" onClick={() => setTab("plan")}><ArrowLeftRight size={18}/><span><strong>Verbindung planen</strong><small>Später mit Anschlusschance & Zuverlässigkeit</small></span></button>
+    </main>}
+
+    {tab === "map" && <main className="mapApp">
+      <MapView stops={stops} selectedTrip={selectedTrip} onSelectStop={chooseStopFromMap} onSelectTrip={chooseTrip} onClearTrip={clearTrip}/>
+    </main>}
+
+    {tab === "plan" && <main className="app planPage">
+      <header className="topbar planTop"><div><p className="eyebrow">Münster · planen</p><h1>Deine Fahrt</h1></div></header>
+      <section className="card planner">
+        <div className="planField"><span>Von</span><input value={planFrom} onChange={(e) => setPlanFrom(e.target.value)} placeholder="Start"/></div>
+        <button className="swap" onClick={swapPlan} aria-label="Start und Ziel tauschen"><ArrowLeftRight size={18}/></button>
+        <div className="planField"><span>Nach</span><input value={planTo} onChange={(e) => setPlanTo(e.target.value)} placeholder="Haltestelle oder Ort"/></div>
+        <button className="primary" onClick={submitPlan}>Verbindung suchen</button>
       </section>
-    </main>
+      <section className="card planInfo">
+        <p className="eyebrow neutral">Warum hier die Statistik hingehört</p>
+        <h2>Schnell ist nicht immer sicher.</h2>
+        <p>Bei einer konkreten Verbindung vergleichen wir später Fahrzeit, typische Verspätung und Umstiegsrisiko. Dann kannst du zwischen <strong>Schnellste</strong> und <strong>Sicherste</strong> wählen.</p>
+        {planMessage && <div className="planMessage">{planMessage}</div>}
+      </section>
+    </main>}
 
     <nav>
-      <button className="active"><BusFront size={20}/><span>Jetzt</span></button>
-      <button><MapIcon size={20}/><span>Karte</span></button>
-      <button><TrendingUp size={20}/><span>Statistik</span></button>
+      <button className={tab === "now" ? "active" : ""} onClick={() => setTab("now")}><BusFront size={20}/><span>Jetzt</span></button>
+      <button className={tab === "map" ? "active" : ""} onClick={() => setTab("map")}><MapIcon size={20}/><span>Karte</span></button>
+      <button className={tab === "plan" ? "active" : ""} onClick={() => setTab("plan")}><ArrowLeftRight size={20}/><span>Planen</span></button>
     </nav>
   </div>;
 }
