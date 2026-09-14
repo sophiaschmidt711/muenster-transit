@@ -1,0 +1,9 @@
+{
+  "name": "Münster Transit",
+  "short_name": "Transit",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f3f7",
+  "theme_color": "#f4f3f7",
+  "description": "Live-ÖPNV, Zuverlässigkeit und Anschlussprognosen für Münster."
+}
