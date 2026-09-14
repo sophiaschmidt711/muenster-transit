@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BusFront, LocateFixed, Map, Navigation, RefreshCw, Search, Star, TrendingUp } from "lucide-react";
+import { BusFront, LocateFixed, Map as MapIcon, Navigation, RefreshCw, Search, Star, TrendingUp } from "lucide-react";
 
 const API = "https://rest.busradar.conterra.de/prod";
 
@@ -202,7 +202,7 @@ export default function App() {
 
     <nav>
       <button className="active"><BusFront size={20}/><span>Jetzt</span></button>
-      <button><Map size={20}/><span>Karte</span></button>
+      <button><MapIcon size={20}/><span>Karte</span></button>
       <button><TrendingUp size={20}/><span>Statistik</span></button>
     </nav>
   </div>;
