@@ -20,26 +20,32 @@ Eine ruhige, mobile-first Oberfläche für:
 
 Inspiriert von der Informationshierarchie von chuuchuu: große Karten, wenig visuelle Unruhe, klare Statusfarben, Statistik direkt an der Fahrt und eine starke Kartenansicht. Keine 1:1-Kopie.
 
-## V0.1
+## Aktueller Stand
 
-Die erste Version enthält zunächst Mock-Daten, damit wir die UI festziehen können.
+Die App nutzt jetzt echte Münster-Livedaten aus dem Busradar-Feed.
 
-### Screens
+### Fertig
 
-1. Jetzt
-2. Karte
-3. Statistik
+- Haltestellen aus der Münster-API
+- echte Live-Abfahrten
+- Verspätungen und prognostizierte Abfahrtszeit
+- Haltestellensuche
+- nächste Haltestelle per Geräte-Standort
+- Speicherung der zuletzt gewählten Haltestelle
+- automatische Aktualisierung alle 20 Sekunden
+- mobile chuuchuu-inspirierte Startansicht
+- GitHub-Actions-Buildprüfung
 
 ### Als Nächstes
 
-1. Datenadapter für `https://rest.busradar.conterra.de/prod`
-2. echte Haltestellen + Abfahrten
-3. echte Karte mit Leaflet
-4. Detailansicht einer Fahrt
-5. Speicherung von Favoriten
-6. PWA Service Worker + Icons
-7. historische Datensammlung
-8. Anschlusslogik und Zuverlässigkeitsmodell
+1. Fahrt antippen und Fahrtverlauf öffnen
+2. echte Live-Karte mit Fahrzeugpositionen
+3. Favoriten
+4. installierbare PWA mit Service Worker und Icons
+5. historische Datensammlung
+6. Verspätungsstatistiken
+7. Anschlusslogik und Zuverlässigkeitsmodell
+8. schnellste vs. sicherste Verbindung
 
 ## Lokal starten
 
