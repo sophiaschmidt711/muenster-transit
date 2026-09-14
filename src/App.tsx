@@ -1,53 +1,209 @@
-import { ArrowRight, BusFront, Clock3, Map, Navigation, Search, ShieldCheck, Star, TrendingUp } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { BusFront, LocateFixed, Map, Navigation, RefreshCw, Search, Star, TrendingUp } from "lucide-react";
 
-type Departure = { line:string; destination:string; minutes:number; delay:number; reliability:number; color:string };
+const API = "https://rest.busradar.conterra.de/prod";
 
-const departures: Departure[] = [
-  { line:"11", destination:"Dieckmannstraße", minutes:3, delay:2, reliability:91, color:"#6a55e8" },
-  { line:"2", destination:"Alte Sternwarte", minutes:7, delay:0, reliability:96, color:"#2785d8" },
-  { line:"14", destination:"Zoo", minutes:11, delay:4, reliability:76, color:"#d56a4c" }
-];
+type StopPart = { nr: string | number };
+type Stop = { name: string; parts: StopPart[]; coordinates: [number, number][] };
+type Departure = {
+  fahrtbezeichner?: string;
+  sequenz?: string | number;
+  haltid?: string | number;
+  einsteigeverbot?: boolean | string;
+  linientext?: string | number;
+  richtungstext?: string;
+  delay?: number | string;
+  abfahrtszeit?: number | string;
+  tatsaechliche_abfahrtszeit?: number | string;
+};
 
-function Reliability({value}:{value:number}) {
-  const cls=value>=90?"good":value>=80?"medium":"risky";
-  return <span className={`pill ${cls}`}><ShieldCheck size={13}/>{value}%</span>;
+type StopFeature = {
+  properties?: { lbez?: string; nr?: string | number };
+  geometry?: { coordinates?: [number, number] };
+};
+
+const lineColors = ["#6a55e8", "#2785d8", "#df6d50", "#2f9a70", "#c4589a", "#8c6d31", "#118ab2", "#ef476f"];
+const cleanName = (value: string) => value.replace(/str\.$/, "straße");
+const normalize = (value: string) => value.toLocaleLowerCase("de-DE").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/ß/g, "ss");
+const departureTime = (d: Departure) => Number(d.tatsaechliche_abfahrtszeit || d.abfahrtszeit || 0);
+const minutesUntil = (timestamp: number) => Math.max(0, Math.ceil((timestamp - Date.now() / 1000) / 60));
+const clock = (timestamp: number) => new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" }).format(new Date(timestamp * 1000));
+const lineColor = (line: string) => {
+  let hash = 0;
+  for (const char of line) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return lineColors[hash % lineColors.length];
+};
+
+function km(a: [number, number], b: [number, number]) {
+  const r = 6371;
+  const rad = (v: number) => v * Math.PI / 180;
+  const dLat = rad(b[1] - a[1]);
+  const dLon = rad(b[0] - a[0]);
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[1])) * Math.cos(rad(b[1])) * Math.sin(dLon / 2) ** 2;
+  return 2 * r * Math.asin(Math.sqrt(x));
 }
 
-export default function App(){
+function groupStops(features: StopFeature[]): Stop[] {
+  const grouped = new Map<string, Stop>();
+  for (const feature of features) {
+    const name = feature.properties?.lbez;
+    const nr = feature.properties?.nr;
+    if (!name || nr == null) continue;
+    if (!grouped.has(name)) grouped.set(name, { name, parts: [], coordinates: [] });
+    const stop = grouped.get(name)!;
+    stop.parts.push({ nr });
+    if (feature.geometry?.coordinates) stop.coordinates.push(feature.geometry.coordinates);
+  }
+  return [...grouped.values()].sort((a, b) => a.name.localeCompare(b.name, "de"));
+}
+
+export default function App() {
+  const [stops, setStops] = useState<Stop[]>([]);
+  const [selectedName, setSelectedName] = useState(() => localStorage.getItem("mt-selected-stop") || "Hauptbahnhof");
+  const [departures, setDepartures] = useState<Departure[]>([]);
+  const [query, setQuery] = useState("");
+  const [loadingStops, setLoadingStops] = useState(true);
+  const [loadingDepartures, setLoadingDepartures] = useState(false);
+  const [error, setError] = useState("");
+  const [distance, setDistance] = useState<number | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+
+  const selected = stops.find((stop) => stop.name === selectedName) || stops[0];
+
+  const matches = useMemo(() => {
+    const q = normalize(query.trim());
+    if (!q) return [];
+    return stops
+      .map((stop) => ({ stop, name: normalize(cleanName(stop.name)) }))
+      .filter(({ name }) => name.includes(q))
+      .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)))
+      .slice(0, 7)
+      .map(({ stop }) => stop);
+  }, [query, stops]);
+
+  const loadDepartures = useCallback(async (stop: Stop) => {
+    setLoadingDepartures(true);
+    setError("");
+    try {
+      const results = await Promise.all(stop.parts.map(async ({ nr }) => {
+        const response = await fetch(`${API}/haltestellen/${nr}/abfahrten?sekunden=7200`, { cache: "no-store" });
+        if (!response.ok) return [] as Departure[];
+        return await response.json() as Departure[];
+      }));
+      const seen = new Set<string>();
+      const now = Date.now() / 1000 - 30;
+      const merged = results.flat().filter((d) => {
+        const key = `${d.fahrtbezeichner}-${d.sequenz}-${d.haltid}`;
+        if (seen.has(key) || String(d.einsteigeverbot) === "true" || departureTime(d) <= now) return false;
+        seen.add(key);
+        return true;
+      }).sort((a, b) => departureTime(a) - departureTime(b)).slice(0, 10);
+      setDepartures(merged);
+      setUpdatedAt(new Date());
+    } catch {
+      setError("Die Live-Abfahrten konnten gerade nicht geladen werden.");
+    } finally {
+      setLoadingDepartures(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const response = await fetch(`${API}/haltestellen`, { cache: "no-store" });
+        if (!response.ok) throw new Error();
+        const data = await response.json() as { features?: StopFeature[] };
+        const grouped = groupStops(data.features || []);
+        setStops(grouped);
+        if (!grouped.some((stop) => stop.name === selectedName) && grouped[0]) setSelectedName(grouped[0].name);
+      } catch {
+        setError("Die Münster-Haltestellen konnten gerade nicht geladen werden.");
+      } finally {
+        setLoadingStops(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    localStorage.setItem("mt-selected-stop", selected.name);
+    loadDepartures(selected);
+    const timer = window.setInterval(() => loadDepartures(selected), 20000);
+    return () => window.clearInterval(timer);
+  }, [selected?.name, loadDepartures]);
+
+  function chooseStop(stop: Stop) {
+    setSelectedName(stop.name);
+    setQuery("");
+    setDistance(null);
+  }
+
+  function findNearest() {
+    if (!navigator.geolocation || !stops.length) return;
+    navigator.geolocation.getCurrentPosition(({ coords }) => {
+      const here: [number, number] = [coords.longitude, coords.latitude];
+      const ranked = stops.map((stop) => ({
+        stop,
+        distance: Math.min(...stop.coordinates.map((point) => km(here, point)))
+      })).filter((item) => Number.isFinite(item.distance)).sort((a, b) => a.distance - b.distance);
+      if (ranked[0]) {
+        setSelectedName(ranked[0].stop.name);
+        setDistance(ranked[0].distance);
+        setQuery("");
+      }
+    }, () => setError("Standort nicht freigegeben."), { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+  }
+
   return <div className="shell">
     <main className="app">
-      <header><div><p className="eyebrow">Münster · live</p><h1>Wohin geht’s?</h1></div></header>
-      <button className="search"><Search size={20}/><span>Haltestelle oder Ziel suchen</span></button>
+      <header className="topbar">
+        <div><p className="eyebrow">Münster · live</p><h1>Wohin geht’s?</h1></div>
+        <button className="round" onClick={() => selected && loadDepartures(selected)} aria-label="Aktualisieren"><RefreshCw size={20}/></button>
+      </header>
+
+      <div className="searchwrap">
+        <div className="search"><Search size={20}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Haltestelle suchen" autoComplete="off"/></div>
+        {query && <div className="suggestions">
+          {matches.length ? matches.map((stop) => <button key={stop.name} onClick={() => chooseStop(stop)}><strong>{cleanName(stop.name)}</strong><small>{stop.parts.length > 1 ? `${stop.parts.length} Steige` : ""}</small></button>) : <div className="empty">Keine Haltestelle gefunden</div>}
+        </div>}
+      </div>
+
+      <button className="nearbyButton" onClick={findNearest}><LocateFixed size={16}/> Nächste Haltestelle finden</button>
 
       <section className="card nearby">
-        <div className="cardhead"><div><span className="tiny"><Navigation size={13}/>In deiner Nähe</span><h2>Aegidiimarkt</h2><p>ca. 3 Min zu Fuß</p></div><button className="icon"><Star size={20}/></button></div>
+        <div className="cardhead">
+          <div><span className="tiny"><Navigation size={13}/>Live-Abfahrten</span><h2>{selected ? cleanName(selected.name) : "Haltestelle"}</h2><p>{distance == null ? "Münster" : distance < 1 ? `${Math.round(distance * 1000)} m entfernt` : `${distance.toFixed(1)} km entfernt`}</p></div>
+          <button className="icon" aria-label="Favorit"><Star size={20}/></button>
+        </div>
+
         <div className="departures">
-          {departures.map(d=><button className="departure" key={d.line+d.destination}>
-            <span className="line" style={{background:d.color}}>{d.line}</span>
-            <span className="copy"><strong>{d.destination}</strong><span className="meta"><Reliability value={d.reliability}/>{d.delay?`+${d.delay} min`:"pünktlich"}</span></span>
-            <span className="mins"><strong>{d.minutes}</strong><small>min</small></span>
-          </button>)}
+          {(loadingStops || loadingDepartures) && !departures.length && <div className="message">Live-Abfahrten werden geladen …</div>}
+          {error && !departures.length && <div className="message error">{error}</div>}
+          {!loadingDepartures && !error && !departures.length && <div className="message">In den nächsten zwei Stunden ist keine Abfahrt gemeldet.</div>}
+          {departures.map((d, index) => {
+            const timestamp = departureTime(d);
+            const delay = Math.round(Number(d.delay || 0) / 60);
+            const line = String(d.linientext || "Bus");
+            return <button className="departure" key={`${d.fahrtbezeichner}-${d.sequenz}-${index}`}>
+              <span className="line" style={{ background: lineColor(line) }}>{line}</span>
+              <span className="copy"><strong>{d.richtungstext || "Richtung unbekannt"}</strong><span className={`meta ${delay > 0 ? "late" : delay < 0 ? "early" : ""}`}>{delay > 0 ? `+${delay} Min. später` : delay < 0 ? `${Math.abs(delay)} Min. früher` : "pünktlich"} · {clock(timestamp)}</span></span>
+              <span className="mins"><strong>{minutesUntil(timestamp)}</strong><small>min</small></span>
+            </button>;
+          })}
         </div>
+        <p className="updated">{updatedAt ? `Stand ${updatedAt.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} · automatisch alle 20 Sekunden` : "Live-Daten der Stadtwerke Münster"}</p>
       </section>
 
-      <section className="card connection">
-        <div className="sectionhead"><div><p className="eyebrow neutral">Dein möglicher Anschluss</p><h2>Schaffst du die 2?</h2></div><span className="chance">84%</span></div>
-        <div className="flow">
-          <div className="route"><span className="routebadge purple">11</span><span><strong>Aegidiimarkt → Hauptbahnhof</strong><small>voraussichtlich 13:48 · +2 min</small></span></div>
-          <div className="transfer"><span></span><div><Clock3 size={15}/>5 Min Umstieg</div></div>
-          <div className="route"><span className="routebadge blue">2</span><span><strong>Hauptbahnhof → Alte Sternwarte</strong><small>Abfahrt 13:53</small></span></div>
-        </div>
-        <div className="prediction"><ShieldCheck size={17}/><span><strong>Sieht gut aus.</strong> In 84% vergleichbarer Fahrten hätte dieser Anschluss funktioniert.</span></div>
+      <section className="card placeholderCard">
+        <div className="sectionhead"><div><p className="eyebrow neutral">Als Nächstes</p><h2>Anschluss & Zuverlässigkeit</h2></div><TrendingUp size={22}/></div>
+        <p>Hier kommen echte Verspätungsstatistiken und Anschlusswahrscheinlichkeiten hin. Wir zeigen bewusst noch keine erfundenen Prozentwerte an, bis genügend historische Daten gesammelt sind.</p>
       </section>
-
-      <section className="card stats">
-        <div className="sectionhead"><div><p className="eyebrow neutral">Letzte 30 Tage</p><h2>Linie 11</h2></div><TrendingUp size={22}/></div>
-        <div className="statgrid"><div><strong>91%</strong><span>unter 5 Min</span></div><div><strong>+2,4</strong><span>Ø Verspätung</span></div><div><strong>3%</strong><span>Ausfälle</span></div></div>
-        {[['Pünktlich','62%'],['1–5 min','29%'],['>5 min','9%']].map(([label,value])=><div className="bar" key={label}><span>{label}</span><i><b style={{width:value}}/></i><strong>{value}</strong></div>)}
-      </section>
-
-      <button className="card mapcard"><div className="mapmock"><span className="road a"/><span className="road b"/><span className="routeLine"/><span className="vehicle">11</span></div><div className="mapcopy"><div><p className="eyebrow neutral">Live-Karte</p><strong>Busse um dich herum</strong></div><ArrowRight size={21}/></div></button>
     </main>
-    <nav><button className="active"><BusFront size={20}/><span>Jetzt</span></button><button><Map size={20}/><span>Karte</span></button><button><TrendingUp size={20}/><span>Statistik</span></button></nav>
-  </div>
+
+    <nav>
+      <button className="active"><BusFront size={20}/><span>Jetzt</span></button>
+      <button><Map size={20}/><span>Karte</span></button>
+      <button><TrendingUp size={20}/><span>Statistik</span></button>
+    </nav>
+  </div>;
 }
