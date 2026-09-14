@@ -129,7 +129,7 @@ export default function MapView({ stops, selectedTrip, onSelectStop, onSelectTri
       const layer = vehicleLayer.current;
       if (!map || !layer) return;
       layer.clearLayers();
-      const bounds: L.LatLngExpression[] = [];
+      const bounds: L.LatLngTuple[] = [];
       vehiclesRef.current.forEach((feature) => {
         const coords = feature.geometry?.coordinates;
         const p = feature.properties || {};
